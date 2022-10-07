@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
+import logging
+from PIL import Image
 import sys
 import os
 import mmap
 import cairocffi as cairo
+import pangocffi
+import pangocairocffi
+import select
+from io import BytesIO
+import time
 import wayland.protocol
 from wayland.client import MakeDisplay
 from wayland.utils import AnonymousFile
 import math
 
-import select
-import time
-import logging
 
 # See https://github.com/sde1000/python-xkbcommon for the following:
 from xkbcommon import xkb
@@ -60,6 +64,7 @@ doexcept_time_guard = time_guard("doexcept",0.5)
 alarm_time_guard = time_guard("alarm",0.5)
 
 def eventloop():
+    t_start = time.time()
     global shutdowncode
     while shutdowncode is None:
         for i in ticklist:
@@ -105,14 +110,17 @@ def ping_handler(thing, serial):
     """
     Respond to a 'ping' with a 'pong'.
     """
+    sys.exit(1)
     thing.pong(serial)
 
 class Window:
-    def __init__(self, connection, width, height, title="Window",
-                 class_="python-wayland-test", redraw=None, fullscreen=False):
-        self.title = title
-        self.orig_width = width
-        self.orig_height = height
+
+    def __init__(self, connection, window, s_objects,
+                 class_="python-wayland", redraw=None, fullscreen=False):
+        self.s_objects = s_objects
+        self.title = window["title"]
+        self.orig_width = window["res_x"]
+        self.orig_height = window["res_y"]
         self._w = connection
         if not self._w.shm_formats:
             raise RuntimeError("No suitable Shm formats available")
@@ -122,11 +130,11 @@ class Window:
         self._w.surfaces[self.surface] = self
         self.xdg_surface = self._w.xdg_wm_base.get_xdg_surface(self.surface)
         self.xdg_toplevel = self.xdg_surface.get_toplevel()
-        self.xdg_toplevel.set_title(title)
+        self.xdg_toplevel.set_title(window["title"])
         self.xdg_toplevel.set_parent(None)
         self.xdg_toplevel.set_app_id(class_)
-        self.xdg_toplevel.set_min_size(width, height)
-        self.xdg_toplevel.set_max_size(width, height)
+        self.xdg_toplevel.set_min_size(window["res_y"], window["res_x"])
+        self.xdg_toplevel.set_max_size(window["res_y"], window["res_x"])
 
         if fullscreen:
             self.xdg_toplevel.set_fullscreen(None)
@@ -163,7 +171,7 @@ class Window:
             return
 
         wl_shm_format, cairo_shm_format = self._w.shm_formats[0]
-        
+
         stride = cairo.ImageSurface.format_stride_for_width(
             cairo_shm_format, width)
         size = stride * height
@@ -381,7 +389,7 @@ class WaylandConnection:
         for wp in self.wps:
             for k,v in wp.interfaces.items():
                 self.interfaces[k] = v
-        
+
         # Create the Display proxy class from the protocol
         Display = MakeDisplay(wp_base)
         self.display = Display()
@@ -477,74 +485,78 @@ class WaylandConnection:
         elif format_ == f.entries['rgb565'].value:
             self.shm_formats.append((format_, cairo.FORMAT_RGB16_565))
 
-def draw_in_window(w):
+
+def draw_img_in_window(w):
     ctx = cairo.Context(w.s)
-    ctx.set_source_rgba(0,0,0,0)
+
+    # SVG
+    if w.s_objects["file"].endswith(".svg") or \
+       w.s_objects["file"].endswith(".SVG"):
+        return
+    # Other image types
+    else:
+        img = Image.open(w.s_objects["file"])
+        # Scale down image if it exceeds screen size
+        img.thumbnail((w.orig_width, w.orig_height), Image.ANTIALIAS)
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+        png = cairo.ImageSurface.create_from_png(buffer)
+
+    # Center image
+    width, height = img.size
+    if w.s_objects["alignment"] == "center":
+        margin_left = (w.orig_width - width) / 2
+    else:
+        margin_left = (w.orig_width - width)
+
+    ctx.set_source_surface(png,
+                           margin_left,
+                           w.s_objects["offset_y"])
+
+    ctx.paint()
+    w.s.flush()
+    w.redraw()
+
+
+def draw_text_in_window(w):
+    logging.info("draw-text: Creating canvas context for {} obects"\
+                 .format(len(w.s_objects)))
+    ctx = cairo.Context(w.s)
+    ctx.set_source_rgba(float(w.s_objects[0]["bg_colour_r"]/255),
+                        float(w.s_objects[0]["bg_colour_g"]/255),
+                        float(w.s_objects[0]["bg_colour_b"]/255), 1)
+
     ctx.set_operator(cairo.OPERATOR_SOURCE)
     ctx.paint()
     ctx.set_operator(cairo.OPERATOR_OVER)
-    ctx.scale(w.width, w.height)
-    pat = cairo.LinearGradient(0.0, 0.0, 0.0, 1.0)
-    pat.add_color_stop_rgba(1, 0.7, 0, 0, 0.5)
-    pat.add_color_stop_rgba(0, 0.9, 0.7, 0.2, 1)
 
-    ctx.rectangle(0, 0, 1, 1)
-    ctx.set_source(pat)
-    ctx.fill()
+    # Position text
+    ctx.translate((w.orig_width / 2) - 550, w.orig_height / 2 - 300)
 
-    del pat
+    layout = pangocairocffi.create_layout(ctx)
+    layout.set_width(pangocffi.units_from_double(1100))
 
-    ctx.translate(0.1, 0.1)
+    if w.s_objects[0]["alignment"] == "left":
+        layout.set_alignment(pangocffi.Alignment.LEFT)
+    elif w.s_objects[0]["alignment"] == "center":
+        layout.set_alignment(pangocffi.Alignment.CENTER)
 
-    ctx.move_to(0, 0)
-    ctx.arc(0.2, 0.1, 0.1, -math.pi/2, 0)
-    ctx.line_to(0.5, 0.1)
-    ctx.curve_to(0.5, 0.2, 0.5, 0.4, 0.2, 0.8)
-    ctx.close_path()
+    markup = ""
 
-    ctx.set_source_rgb(0.3, 0.2, 0.5)
-    ctx.set_line_width(0.02)
-    ctx.stroke()
+    for obj in w.s_objects:
+        logging.info("draw-text: Adding pango markup block")
+        markup += '<span foreground="white" font="{} {}">{}\n</span>'\
+                  .format(obj["font_face"],
+                  obj["font_size"],
+                  obj["text"])
 
-    ctx.select_font_face("monospace")
-    ctx.set_font_size(0.05)
-    ctx.set_source_rgb(1.0, 1.0, 1.0)
-    ctx.move_to(0.2, 0.2)
-    ctx.show_text("{} {} x {}".format(w.title, w.width, w.height))
+    logging.info("pango-markup: {}".format(markup))
+    layout.set_markup(markup)
+
+    pangocairocffi.show_layout(ctx, layout)
 
     del ctx
 
     w.s.flush()
     w.redraw()
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    # Load the main Wayland protocol.
-    wp_base = wayland.protocol.Protocol("/usr/share/wayland/wayland.xml")
-    wp_xdg_shell = wayland.protocol.Protocol("/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml")
-
-    try:
-        conn = WaylandConnection(wp_base, wp_xdg_shell)
-    except FileNotFoundError as e:
-        if e.errno == 2:
-            print("Unable to connect to the compositor - "
-                  "is one running?")
-            sys.exit(1)
-        raise
-    w1 = Window(conn, 640, 480, title="Window 1", redraw=draw_in_window)
-    w2 = Window(conn, 320, 240, title="Window 2", redraw=draw_in_window)
-    w3 = Window(conn, 160, 120, title="Window 3", redraw=draw_in_window)
-
-    eventloop()
-
-    w1.close()
-    w2.close()
-    w3.close()
-
-    conn.display.roundtrip()
-    conn.disconnect()
-    print("About to exit with code {}".format(shutdowncode))
-
-    logging.shutdown()
-    sys.exit(shutdowncode)
