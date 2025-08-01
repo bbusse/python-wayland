@@ -487,7 +487,7 @@ class WaylandConnection:
             self.shm_formats.append((format_, cairo.FORMAT_RGB16_565))
 
 
-def resize_image(img, canvas_x, canvas_y):
+def resize_image(img, canvas_x, canvas_y, width, height):
     dwidth = canvas_x - width
     dheight = canvas_y - height
 
@@ -503,15 +503,15 @@ def resize_image(img, canvas_x, canvas_y):
     return img
 
 
-def draw_images_with_text(w, ctx=None):
+def draw_images_with_text(w, canvas_x, canvas_y, ctx=None):
     if not ctx:
-        ctx = draw_image(w, None, True)
+        ctx = draw_image(w, canvas_x, canvas_y, None, True)
     else:
-        ctx = draw_image_with_context(w, ctx)
+        ctx = draw_image_with_context(w, canvas_x, canvas_y, ctx)
 
     draw_text(w, ctx)
 
-def draw_image(w, ctx=False, text=False):
+def draw_image(w, canvas_x, canvas_y, ctx=False, text=False):
     if not ctx:
         ctx = cairo.Context(w.s)
 
@@ -528,7 +528,8 @@ def draw_image(w, ctx=False, text=False):
         # Scale up
         if w.s_objects[0]["img_scale_up"]:
             if height < w.orig_height or width < w.orig_width:
-                img = resize_image(img, w.orig_width, w.orig_height)
+                #img = resize_image(img, canvas_x, canvas_y, w.orig_width, w.orig_height)
+                img = img
 
         buffer = BytesIO()
         img.save(buffer, format="PNG")
@@ -539,7 +540,8 @@ def draw_image(w, ctx=False, text=False):
     if w.s_objects[0]["alignment"] == "center":
         margin_left = (w.orig_width - width) / 2
     else:
-        margin_left = (w.orig_width - width)
+        #margin_left = (w.orig_width - width)
+        margin_left = 0
 
     ctx.set_source_surface(png,
                            margin_left,
@@ -554,7 +556,7 @@ def draw_image(w, ctx=False, text=False):
     w.redraw()
 
 
-def draw_image_with_context(w, ctx):
+def draw_image_with_context(w, canvas_x, canvas_y, ctx):
     ctx.set_operator(cairo.OPERATOR_SOURCE)
     ctx.paint()
     ctx.set_operator(cairo.OPERATOR_OVER)
@@ -610,7 +612,7 @@ def draw_text(w, ctx=None):
                       obj["font_size"],
                       obj["text"])
 
-    logging.debug("pango-markup: {}".format(markup))
+    logging.info("draw-text: {}".format(markup))
     layout.apply_markup(markup)
 
     pangocairocffi.show_layout(ctx, layout)
