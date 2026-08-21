@@ -492,26 +492,68 @@ def resize_image(img, canvas_x, canvas_y, width, height):
     dheight = canvas_y - height
 
     if dheight > dwidth:
-        new_height = w.orig_height
-        new_width = width * int(new_height / height)
+        new_height = canvas_y
+        new_width = round(width * new_height / height)
         img = img.resize((new_width, new_height))
     else:
         new_width = canvas_x
-        new_height = height * int(new_width / width)
+        new_height = round(height * new_width / width)
         img = img.resize((new_width, new_height))
 
     return img
 
 
-def draw_images_with_text(w, canvas_x, canvas_y, ctx=None):
+def draw_images_with_text(w, ctx=None):
+    import os
     if not ctx:
-        ctx = draw_image(w, canvas_x, canvas_y, None, True)
-    else:
-        ctx = draw_image_with_context(w, canvas_x, canvas_y, ctx)
+        ctx = cairo.Context(w.s)
+    ctx.set_operator(cairo.OPERATOR_SOURCE)
+    ctx.paint()
+    ctx.set_operator(cairo.OPERATOR_OVER)
+    y = 40
+    for idx, obj in enumerate(w.s_objects):
+        file_path = obj.get("file")
+        if file_path:
+            logging.info(f"draw_images_with_text: s_object[{idx}]['file'] = {file_path}")
+            exists = os.path.isfile(file_path)
+            logging.info(f"draw_images_with_text: file exists: {exists}")
+            if exists:
+                try:
+                    size = os.path.getsize(file_path)
+                    logging.info(f"draw_images_with_text: file size: {size}")
+                    import imghdr
+                    imgtype = imghdr.what(file_path)
+                    logging.info(f"draw_images_with_text: file type: {imgtype}")
+                except Exception as e:
+                    logging.error(f"draw_images_with_text: file stat/type error: {e}")
+        if file_path and os.path.isfile(file_path):
+            try:
+                img = Image.open(file_path)
+                buffer = BytesIO()
+                img.save(buffer, format="PNG")
+                buffer.seek(0)
+                png = cairo.ImageSurface.create_from_png(buffer)
+                ctx.set_source_surface(png, 40, y)
+                ctx.paint()
+                y += png.get_height() + 10
+            except Exception as e:
+                logging.error(f"draw_images_with_text: {e}")
+        elif obj.get("text"):
+            ctx.save()
+            ctx.translate(40, y)
+            layout = pangocairocffi.create_layout(ctx)
+            font = obj.get("font") or obj.get("font_face") or "sans"
+            font_size = obj.get("font_size") or 20
+            markup = f'<span foreground="white" font="{font} {font_size}">{obj["text"]}</span>'
+            layout.apply_markup(markup)
+            pangocairocffi.show_layout(ctx, layout)
+            ctx.restore()
+            y += 40
+    del ctx
+    w.s.flush()
+    w.redraw()
 
-    draw_text(w, ctx)
-
-def draw_image(w, canvas_x, canvas_y, ctx=False, text=False):
+def draw_image(w, ctx=False, text=False):
     if not ctx:
         ctx = cairo.Context(w.s)
 
@@ -528,8 +570,8 @@ def draw_image(w, canvas_x, canvas_y, ctx=False, text=False):
         # Scale up
         if w.s_objects[0]["img_scale_up"]:
             if height < w.orig_height or width < w.orig_width:
-                #img = resize_image(img, canvas_x, canvas_y, w.orig_width, w.orig_height)
-                img = img
+                img = resize_image(img, w.orig_width, w.orig_height, width, height)
+                width, height = img.size
 
         buffer = BytesIO()
         img.save(buffer, format="PNG")
@@ -556,7 +598,7 @@ def draw_image(w, canvas_x, canvas_y, ctx=False, text=False):
     w.redraw()
 
 
-def draw_image_with_context(w, canvas_x, canvas_y, ctx):
+def draw_image_with_context(w, ctx):
     ctx.set_operator(cairo.OPERATOR_SOURCE)
     ctx.paint()
     ctx.set_operator(cairo.OPERATOR_OVER)
