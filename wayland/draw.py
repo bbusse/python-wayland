@@ -154,6 +154,10 @@ class Window:
 
     def close(self):
         if not self.surface.destroyed:
+            # The xdg objects hold the role for this surface and have to go
+            # first, the compositor rejects a surface destroyed before its role
+            self.xdg_toplevel.destroy()
+            self.xdg_surface.destroy()
             self.surface.destroy()
             if self.buffer is not None:
                 self.buffer.destroy()
