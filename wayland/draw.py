@@ -487,6 +487,11 @@ class WaylandConnection:
             self.shm_formats.append((format_, cairo.FORMAT_RGB16_565))
 
 
+def img_scale_down(img, canvas_x, canvas_y):
+    img.thumbnail((canvas_x, canvas_y), Image.LANCZOS)
+    return img
+
+
 def resize_image(img, canvas_x, canvas_y, width, height):
     dwidth = canvas_x - width
     dheight = canvas_y - height
@@ -567,7 +572,7 @@ def draw_image(w, ctx=False, text=False):
         width, height = img.size
         # Scale down if image exceeds screen size
         if w.s_objects[0]["img_scale_down"] and (width > w.orig_width or height > w.orig_height):
-            img.thumbnail((w.orig_width, w.orig_height), Image.LANCZOS)
+            img = img_scale_down(img, w.orig_width, w.orig_height)
             width, height = img.size
         # Scale up if image is smaller than screen
         elif w.s_objects[0]["img_scale_up"]:
