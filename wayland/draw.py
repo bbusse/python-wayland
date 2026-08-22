@@ -566,7 +566,7 @@ def draw_image(w, ctx=False, text=False):
         img = Image.open(w.s_objects[0]["file"])
         width, height = img.size
         # Scale down if image exceeds screen size
-        if width > w.orig_width or height > w.orig_height:
+        if w.s_objects[0]["img_scale_down"] and (width > w.orig_width or height > w.orig_height):
             img.thumbnail((w.orig_width, w.orig_height), Image.LANCZOS)
             width, height = img.size
         # Scale up if image is smaller than screen
