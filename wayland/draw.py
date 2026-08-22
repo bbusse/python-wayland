@@ -100,7 +100,6 @@ def eventloop():
                         preselectlist.remove(i)
         if not rdlist:
             log.warning("eventloop: no connections left to serve")
-            shutdowncode = 1
             break
         try:
             (rd, wr, ex) = select.select(rdlist, [], [], timeout)
