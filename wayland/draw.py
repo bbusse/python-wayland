@@ -12,7 +12,7 @@ import select
 from io import BytesIO
 import time
 import wayland.protocol
-from wayland.client import MakeDisplay
+from wayland.client import MakeDisplay, DisplayError, ServerDisconnected
 from wayland.utils import AnonymousFile
 import math
 
@@ -64,6 +64,12 @@ dowrite_time_guard = time_guard("dowrite",0.5)
 doexcept_time_guard = time_guard("doexcept",0.5)
 alarm_time_guard = time_guard("alarm",0.5)
 
+# The compositor has gone away for this connection, either because it
+# dropped us or because we sent it something it did not accept
+connection_lost = (BrokenPipeError, ConnectionResetError,
+                   ServerDisconnected, DisplayError)
+
+
 def eventloop():
     t_start = time.time()
     global shutdowncode
@@ -81,9 +87,21 @@ def eventloop():
                 continue
             if timeout is None or (nt - t) < timeout:
                 timeout = nt - t
-        for i in preselectlist:
+        # The lists are shared by every view in this process, so a connection
+        # the compositor dropped is stopped watching rather than raised on.
+        # Otherwise it takes down whichever thread happens to poll it next
+        for i in list(preselectlist):
             with preselect_time_guard:
-                i()
+                try:
+                    i()
+                except connection_lost as e:
+                    log.warning("eventloop: preselect failed, dropping: %s", e)
+                    if i in preselectlist:
+                        preselectlist.remove(i)
+        if not rdlist:
+            log.warning("eventloop: no connections left to serve")
+            shutdowncode = 1
+            break
         try:
             (rd, wr, ex) = select.select(rdlist, [], [], timeout)
         except KeyboardInterrupt:
@@ -91,7 +109,12 @@ def eventloop():
             shutdowncode = 1
         for i in rd:
             with doread_time_guard:
-                i.doread()
+                try:
+                    i.doread()
+                except connection_lost as e:
+                    log.warning("eventloop: read failed, dropping: %s", e)
+                    if i in rdlist:
+                        rdlist.remove(i)
         for i in wr:
             with dowrite_time_guard:
                 i.dowrite()
