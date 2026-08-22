@@ -492,7 +492,7 @@ def img_scale_down(img, canvas_x, canvas_y):
     return img
 
 
-def resize_image(img, canvas_x, canvas_y, width, height):
+def img_scale_up(img, canvas_x, canvas_y, width, height):
     dwidth = canvas_x - width
     dheight = canvas_y - height
 
@@ -577,7 +577,7 @@ def draw_image(w, ctx=False, text=False):
         # Scale up if image is smaller than screen
         elif w.s_objects[0]["img_scale_up"]:
             if height < w.orig_height or width < w.orig_width:
-                img = resize_image(img, w.orig_width, w.orig_height, width, height)
+                img = img_scale_up(img, w.orig_width, w.orig_height, width, height)
                 width, height = img.size
 
         buffer = BytesIO()
