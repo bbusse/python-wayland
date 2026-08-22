@@ -189,14 +189,20 @@ class Window:
                 del self.s, self.shm_data
 
     def resize(self, width, height):
-        # Drop previous buffer and shm data if necessary
-        if self.buffer:
-            self.buffer.destroy()
-            self.shm_data.close()
-
-        # Do not complete a resize until configure has been acknowledged
+        # Do not complete a resize until configure has been acknowledged.
+        # Checked before dropping anything, so a resize we are not going to
+        # finish leaves the buffer we are still showing alone
         if self.wait_for_configure:
             return
+
+        # Drop previous buffer and shm data if necessary. Cleared as well as
+        # destroyed: the proxy stays truthy once destroyed, so a second
+        # resize would otherwise call destroy() on it again
+        if self.buffer is not None:
+            self.buffer.destroy()
+            self.buffer = None
+            self.shm_data.close()
+            self.shm_data = None
 
         wl_shm_format, cairo_shm_format = self._w.shm_formats[0]
 
