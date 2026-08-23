@@ -133,7 +133,6 @@ def ping_handler(thing, serial):
     """
     Respond to a 'ping' with a 'pong'.
     """
-    sys.exit(1)
     thing.pong(serial)
 
 class Window:
@@ -163,7 +162,6 @@ class Window:
             self.xdg_toplevel.set_fullscreen(None)
 
         self.wait_for_configure = True
-        self.xdg_surface.dispatcher['ping'] = ping_handler
         self.xdg_surface.dispatcher['configure'] = \
             self._xdg_surface_configure_handler
 
@@ -487,6 +485,7 @@ class WaylandConnection:
             # We know up to and require version 1
             self.xdg_wm_base = registry.bind(
                 name, self.interfaces['xdg_wm_base'], 1)
+            self.xdg_wm_base.dispatcher['ping'] = ping_handler
         elif interface == "wl_shm":
             # We know up to and require version 1
             self.shm = registry.bind(
