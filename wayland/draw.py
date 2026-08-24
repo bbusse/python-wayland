@@ -277,11 +277,11 @@ class Seat:
         # around.
 
     def _name(self, seat, name):
-        print("Seat got name: {}".format(name))
+        log.info("Seat got name: %s", name)
         self.name = name
 
     def _capabilities(self, seat, c):
-        print("Seat {} got capabilities: {}".format(self.name, c))
+        log.info("Seat %s got capabilities: %s", self.name, c)
         self.capabilities = c
         pointer_available = c & self.c_enum['pointer']
         if pointer_available and not self.pointer:
@@ -313,13 +313,13 @@ class Seat:
             self.keyboard = None
 
     def pointer_enter(self, pointer, serial, surface, surface_x, surface_y):
-        print("pointer_enter {} {} {} {}".format(
-            serial, surface, surface_x, surface_y))
+        log.debug("pointer_enter %s %s %s %s",
+                  serial, surface, surface_x, surface_y)
         self.current_pointer_window = self._c.surfaces.get(surface, None)
         pointer.set_cursor(serial, None, 0, 0)
 
     def pointer_leave(self, pointer, serial, surface):
-        print("pointer_leave {} {}".format(serial, surface))
+        log.debug("pointer_leave %s %s", serial, surface)
         self.current_pointer_window = None
 
     def pointer_motion(self, pointer, time, surface_x, surface_y):
@@ -329,16 +329,16 @@ class Seat:
             self, time, surface_x, surface_y)
 
     def pointer_button(self, pointer, serial, time, button, state):
-        print("pointer_button {} {} {} {}".format(serial, time, button, state))
+        log.debug("pointer_button %s %s %s %s", serial, time, button, state)
         if state == 1 and self.current_pointer_window:
-            print("Seat {} starting shell surface move".format(self.name))
+            log.debug("Seat %s starting shell surface move", self.name)
             self.current_pointer_window.xdg_toplevel.move(self.s, serial)
 
     def pointer_axis(self, pointer, time, axis, value):
-        print("pointer_axis {} {} {}".format(time, axis, value))
+        log.debug("pointer_axis %s %s %s", time, axis, value)
 
     def keyboard_keymap(self, keyboard, format_, fd, size):
-        print("keyboard_keymap {} {} {}".format(format_, fd, size))
+        log.debug("keyboard_keymap %s %s %s", format_, fd, size)
         keymap_data = mmap.mmap(
             fd, size, prot=mmap.PROT_READ, flags=mmap.MAP_PRIVATE)
         os.close(fd)
@@ -350,22 +350,22 @@ class Seat:
         self.keyboard_state = keymap.state_new()
 
     def keyboard_enter(self, keyboard, serial, surface, keys):
-        print("keyboard_enter {} {} {}".format(serial, surface, keys))
+        log.debug("keyboard_enter %s %s %s", serial, surface, keys)
         self.current_keyboard_window = self._c.surfaces.get(surface, None)
 
     def keyboard_leave(self, keyboard, serial, surface):
-        print("keyboard_leave {} {}".format(serial, surface))
+        log.debug("keyboard_leave %s %s", serial, surface)
         self.current_keyboard_window = None
 
     def keyboard_key(self, keyboard, serial, time, key, state):
-        print("keyboard_key {} {} {} {}".format(serial, time, key, state))
+        log.debug("keyboard_key %s %s %s %s", serial, time, key, state)
         sym = self.keyboard_state.key_get_one_sym(key + 8)
         if state == 1 and sym == self.tabsym:
             # Why did I put this in?!
-            print("Saw a tab!")
+            log.debug("Saw a tab!")
         if state == 1:
             s = self.keyboard_state.key_get_string(key + 8)
-            print("s={}".format(repr(s)))
+            log.debug("s=%r", s)
             if s == "q":
                 global shutdowncode
                 shutdowncode = 0
@@ -386,8 +386,8 @@ class Seat:
 
     def keyboard_modifiers(self, keyboard, serial, mods_depressed,
                            mods_latched, mods_locked, group):
-        print("keyboard_modifiers {} {} {} {} {}".format(
-            serial, mods_depressed, mods_latched, mods_locked, group))
+        log.debug("keyboard_modifiers %s %s %s %s %s",
+                  serial, mods_depressed, mods_latched, mods_locked, group)
         self.keyboard_state.update_mask(mods_depressed, mods_latched,
                                         mods_locked, group, 0, 0)
 
@@ -402,16 +402,16 @@ class Output:
 
     def _geometry(self, output, x, y, phy_width, phy_height, subpixel,
                   make, model, transform):
-        print("Ouput: got geometry: x={}, y={}, phy_width={}, phy_height={},"
-              "make={}, model={}".format(x, y, phy_width, phy_height,
-                                         make, model))
+        log.info("Output: got geometry: x=%s, y=%s, phy_width=%s, "
+                 "phy_height=%s, make=%s, model=%s",
+                 x, y, phy_width, phy_height, make, model)
 
     def _mode(self, output, flags, width, height, refresh):
-        print("Output: got mode: flags={}, width={}, height={}, refresh={}" \
-              .format(flags, width, height, refresh))
+        log.info("Output: got mode: flags=%s, width=%s, height=%s, "
+                 "refresh=%s", flags, width, height, refresh)
 
     def _done(self, output):
-        print("Output: done for now")
+        log.info("Output: done for now")
 
 class WaylandConnection:
     def __init__(self, wp_base, *other_wps):
@@ -475,8 +475,8 @@ class WaylandConnection:
         self.display.flush()
 
     def registry_global_handler(self, registry, name, interface, version):
-        print("registry_global_handler: {} is {} v{}".format(
-            name, interface, version))
+        log.info("registry_global_handler: %s is %s v%s",
+                 name, interface, version)
         if interface == "wl_compositor":
             # We know up to and require version 3
             self.compositor = registry.bind(
@@ -502,10 +502,10 @@ class WaylandConnection:
 
     def registry_global_remove_handler(self, registry, name):
         # Haven't been able to get weston to send this event!
-        print("registry_global_remove_handler: {} gone".format(name))
+        log.info("registry_global_remove_handler: %s gone", name)
         for s in self.seats:
             if s.global_name == name:
-                print("...it was a seat!  Releasing seat resources.")
+                log.info("...it was a seat!  Releasing seat resources.")
                 s.removed()
 
     def shm_format_handler(self, shm, format_):
@@ -550,16 +550,16 @@ def draw_images_with_text(w, ctx=None):
     for idx, obj in enumerate(w.s_objects):
         file_path = obj.get("file")
         if file_path:
-            logging.info(f"draw_images_with_text: s_object[{idx}]['file'] = {file_path}")
+            logging.debug(f"draw_images_with_text: s_object[{idx}]['file'] = {file_path}")
             exists = os.path.isfile(file_path)
-            logging.info(f"draw_images_with_text: file exists: {exists}")
+            logging.debug(f"draw_images_with_text: file exists: {exists}")
             if exists:
                 try:
                     size = os.path.getsize(file_path)
-                    logging.info(f"draw_images_with_text: file size: {size}")
+                    logging.debug(f"draw_images_with_text: file size: {size}")
                     import imghdr
                     imgtype = imghdr.what(file_path)
-                    logging.info(f"draw_images_with_text: file type: {imgtype}")
+                    logging.debug(f"draw_images_with_text: file type: {imgtype}")
                 except Exception as e:
                     logging.error(f"draw_images_with_text: file stat/type error: {e}")
         if file_path and os.path.isfile(file_path):
@@ -619,13 +619,15 @@ def draw_image(w, ctx=False, text=False):
     # Center image
     if w.s_objects[0]["alignment"] == "center":
         margin_left = (w.orig_width - width) / 2
+        margin_top = (w.orig_height - height) / 2
     else:
         #margin_left = (w.orig_width - width)
         margin_left = 0
+        margin_top = 0
 
     ctx.set_source_surface(png,
                            margin_left,
-                           w.s_objects[0]["offset_y"])
+                           margin_top + w.s_objects[0]["offset_y"])
 
     ctx.paint()
 
@@ -650,7 +652,7 @@ def draw_image_with_context(w, ctx):
 
 def draw_text(w, ctx=None):
     if not ctx:
-        logging.info("draw-text: Creating canvas context for {} objects"\
+        logging.debug("draw-text: Creating canvas context for {} objects"\
                      .format(len(w.s_objects)))
         ctx = cairo.Context(w.s)
 
@@ -677,7 +679,7 @@ def draw_text(w, ctx=None):
     markup = ""
 
     for obj in w.s_objects:
-        logging.info("draw-text: Adding pango markup block")
+        logging.debug("draw-text: Adding pango markup block")
 
         if not obj["font"]:
             # Use font-face
@@ -692,7 +694,7 @@ def draw_text(w, ctx=None):
                       obj["font_size"],
                       obj["text"])
 
-    logging.info("draw-text: {}".format(markup))
+    logging.debug("draw-text: {}".format(markup))
     layout.apply_markup(markup)
 
     pangocairocffi.show_layout(ctx, layout)
