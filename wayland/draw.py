@@ -86,7 +86,7 @@ def eventloop():
             if nt is None:
                 continue
             if timeout is None or (nt - t) < timeout:
-                timeout = nt - t
+                timeout = max(nt - t, 0)
         # The lists are shared by every view in this process, so a connection
         # the compositor dropped is stopped watching rather than raised on.
         # Otherwise it takes down whichever thread happens to poll it next
