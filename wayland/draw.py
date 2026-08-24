@@ -107,7 +107,9 @@ class Window:
 
         self.buffer = None
         self.shm_data = None
-        self.surface.commit()
+        self.commits = 0
+        self.frames = 0
+        self.commit()
 
     def close(self):
         if not self.surface.destroyed:
@@ -127,6 +129,14 @@ class Window:
         # Checked before dropping anything, so a resize we are not going to
         # finish leaves the buffer we are still showing alone
         if self.wait_for_configure:
+            return
+
+        # A configure arrives whenever the compositor touches the window, most
+        # of them asking for the size we already have. Reallocating the buffer
+        # and redrawing for those costs an shm file and a full repaint each
+        # time, so the existing buffer is presented again instead
+        if self.buffer is not None and (width, height) == (self.width, self.height):
+            self.redraw()
             return
 
         # Drop previous buffer and shm data if necessary. Cleared as well as
@@ -159,15 +169,40 @@ class Window:
         self.height = height
 
         if self.redraw_func:
-            # This should invoke `redraw` which then invokes `surface.commit`
+            # This should invoke `redraw` which then invokes `commit`
             self.redraw_func(self)
         else:
-            self.surface.commit()
+            self.commit()
+
+    def commit(self):
+        """Present the surface, asking the compositor to tell us when it did.
+
+        commits counts what we submitted, frames counts what was actually put
+        on screen, so the two differ when the compositor drops or throttles
+        """
+        if self.surface.destroyed:
+            return
+
+        try:
+            callback = self.surface.frame()
+            callback.dispatcher['done'] = self._frame_done
+        except Exception as e:
+            log.debug("frame callback unavailable: %s", e)
+
+        self.commits += 1
+        self.surface.commit()
+
+    def _frame_done(self, callback, time_ms):
+        self.frames += 1
+        try:
+            callback.destroy()
+        except Exception:
+            pass
 
     def redraw(self):
         """Copy the whole window surface to the display"""
         self.add_damage()
-        self.surface.commit()
+        self.commit()
 
     def add_damage(self, x=0, y=0, width=None, height=None):
         if width is None:
