@@ -22,28 +22,24 @@ from xkbcommon import xkb
 
 log = logging.getLogger(__name__)
 
-shutdowncode = None
-
-# List of future events; objects must support the nexttime attribute
-# and alarm() method. nexttime should be the time at which the object
-# next wants to be called, or None if the object temporarily does not
-# need to be scheduled.
-eventlist = []
-
-# List of file descriptors to watch with handlers.  Expected to be objects
-# with a fileno() method that returns the appropriate fd number, and methods
-# called doread(), dowrite(), etc.
-rdlist = []
-
-# List of functions to invoke each time around the event loop.  These
-# functions may do anything, including changing timeouts and drawing
-# on the display.
-ticklist = []
-
-# List of functions to invoke before calling select.  These functions
-# may not change timeouts or draw on the display.  They will typically
-# flush queued output.
-preselectlist = []
+# The lists below live on the connection rather than at module level, so a
+# process running one view per thread keeps them apart. Shared, one view's
+# dead socket unregistered another's, one view's timer was alarmed by every
+# other view's loop, and one view's shutdown ended all of them.
+#
+# eventlist:     future events; objects must support the nexttime attribute
+#                and alarm() method. nexttime should be the time at which the
+#                object next wants to be called, or None if the object
+#                temporarily does not need to be scheduled.
+# rdlist:        file descriptors to watch with handlers. Expected to be
+#                objects with a fileno() method that returns the appropriate
+#                fd number, and methods called doread(), dowrite(), etc.
+# ticklist:      functions to invoke each time around the event loop. These
+#                functions may do anything, including changing timeouts and
+#                drawing on the display.
+# preselectlist: functions to invoke before calling select. These functions
+#                may not change timeouts or draw on the display. They will
+#                typically flush queued output.
 
 class time_guard(object):
     def __init__(self, name, max_time):
@@ -69,65 +65,6 @@ alarm_time_guard = time_guard("alarm",0.5)
 connection_lost = (BrokenPipeError, ConnectionResetError,
                    ServerDisconnected, DisplayError)
 
-
-def eventloop():
-    t_start = time.time()
-    global shutdowncode
-    while shutdowncode is None:
-        for i in ticklist:
-            with tick_time_guard:
-                i()
-        # Work out what the earliest timeout is
-        timeout = None
-        t = time.time()
-        for i in eventlist:
-            nt = i.nexttime
-            i.mainloopnexttime = nt
-            if nt is None:
-                continue
-            if timeout is None or (nt - t) < timeout:
-                timeout = max(nt - t, 0)
-        # The lists are shared by every view in this process, so a connection
-        # the compositor dropped is stopped watching rather than raised on.
-        # Otherwise it takes down whichever thread happens to poll it next
-        for i in list(preselectlist):
-            with preselect_time_guard:
-                try:
-                    i()
-                except connection_lost as e:
-                    log.warning("eventloop: preselect failed, dropping: %s", e)
-                    if i in preselectlist:
-                        preselectlist.remove(i)
-        if not rdlist:
-            log.warning("eventloop: no connections left to serve")
-            break
-        try:
-            (rd, wr, ex) = select.select(rdlist, [], [], timeout)
-        except KeyboardInterrupt:
-            (rd, wr, ex) = [], [], []
-            shutdowncode = 1
-        for i in rd:
-            with doread_time_guard:
-                try:
-                    i.doread()
-                except connection_lost as e:
-                    log.warning("eventloop: read failed, dropping: %s", e)
-                    if i in rdlist:
-                        rdlist.remove(i)
-        for i in wr:
-            with dowrite_time_guard:
-                i.dowrite()
-        for i in ex:
-            with doexcept_time_guard:
-                i.doexcept()
-        # Process any events whose time has come
-        t = time.time()
-        for i in eventlist:
-            if not hasattr(i, 'mainloopnexttime'):
-                continue
-            if i.mainloopnexttime and t >= i.mainloopnexttime:
-                with alarm_time_guard:
-                    i.alarm()
 
 def ping_handler(thing, serial):
     """
@@ -367,8 +304,7 @@ class Seat:
             s = self.keyboard_state.key_get_string(key + 8)
             log.debug("s=%r", s)
             if s == "q":
-                global shutdowncode
-                shutdowncode = 0
+                self._c.shutdowncode = 0
             elif s == "c":
                 # Close the window
                 self.current_keyboard_window.close()
@@ -415,6 +351,11 @@ class Output:
 
 class WaylandConnection:
     def __init__(self, wp_base, *other_wps):
+        self.shutdowncode = None
+        self.eventlist = []
+        self.rdlist = []
+        self.ticklist = []
+        self.preselectlist = []
         self.wps = (wp_base,) + other_wps
         self.interfaces = {}
         for wp in self.wps:
@@ -458,8 +399,8 @@ class WaylandConnection:
         # Pick up shm formats
         self.display.roundtrip()
 
-        rdlist.append(self)
-        preselectlist.append(self._preselect)
+        self.rdlist.append(self)
+        self.preselectlist.append(self._preselect)
 
     def fileno(self):
         return self.display.get_fd()
@@ -470,6 +411,65 @@ class WaylandConnection:
     def doread(self):
         self.display.recv()
         self.display.dispatch_pending()
+
+    def eventloop(self):
+        while self.shutdowncode is None:
+            for i in self.ticklist:
+                with tick_time_guard:
+                    i()
+
+            timeout = None
+            t = time.time()
+            for i in self.eventlist:
+                nt = i.nexttime
+                i.mainloopnexttime = nt
+                if nt is None:
+                    continue
+                if timeout is None or (nt - t) < timeout:
+                    timeout = max(nt - t, 0)
+
+            for i in list(self.preselectlist):
+                with preselect_time_guard:
+                    try:
+                        i()
+                    except connection_lost as e:
+                        log.warning("eventloop: preselect failed, dropping: %s", e)
+                        if i in self.preselectlist:
+                            self.preselectlist.remove(i)
+
+            if not self.rdlist:
+                log.warning("eventloop: connection is gone, stopping")
+                self.shutdowncode = 1
+                break
+
+            try:
+                (rd, wr, ex) = select.select(self.rdlist, [], [], timeout)
+            except KeyboardInterrupt:
+                (rd, wr, ex) = [], [], []
+                self.shutdowncode = 1
+
+            for i in rd:
+                with doread_time_guard:
+                    try:
+                        i.doread()
+                    except connection_lost as e:
+                        log.warning("eventloop: read failed, dropping: %s", e)
+                        if i in self.rdlist:
+                            self.rdlist.remove(i)
+            for i in wr:
+                with dowrite_time_guard:
+                    i.dowrite()
+            for i in ex:
+                with doexcept_time_guard:
+                    i.doexcept()
+
+            t = time.time()
+            for i in self.eventlist:
+                if not hasattr(i, 'mainloopnexttime'):
+                    continue
+                if i.mainloopnexttime and t >= i.mainloopnexttime:
+                    with alarm_time_guard:
+                        i.alarm()
 
     def _preselect(self):
         self.display.flush()
