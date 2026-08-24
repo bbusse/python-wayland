@@ -349,6 +349,42 @@ class Output:
     def _done(self, output):
         log.info("Output: done for now")
 
+class Waker:
+    """A pipe in rdlist, so stop() can interrupt a blocking select."""
+
+    def __init__(self):
+        self.r, self.w = os.pipe()
+        os.set_blocking(self.r, False)
+
+    def fileno(self):
+        return self.r
+
+    def doread(self):
+        try:
+            os.read(self.r, 64)
+        except BlockingIOError:
+            pass
+
+    def dowrite(self):
+        pass
+
+    def doexcept(self):
+        pass
+
+    def wake(self):
+        try:
+            os.write(self.w, b"w")
+        except OSError:
+            pass
+
+    def close(self):
+        for fd in (self.r, self.w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 class WaylandConnection:
     def __init__(self, wp_base, *other_wps):
         self.shutdowncode = None
@@ -399,13 +435,20 @@ class WaylandConnection:
         # Pick up shm formats
         self.display.roundtrip()
 
+        self.waker = Waker()
         self.rdlist.append(self)
+        self.rdlist.append(self.waker)
         self.preselectlist.append(self._preselect)
 
     def fileno(self):
         return self.display.get_fd()
 
+    def stop(self, code=0):
+        self.shutdowncode = code
+        self.waker.wake()
+
     def disconnect(self):
+        self.waker.close()
         self.display.disconnect()
 
     def doread(self):
@@ -437,7 +480,7 @@ class WaylandConnection:
                         if i in self.preselectlist:
                             self.preselectlist.remove(i)
 
-            if not self.rdlist:
+            if self not in self.rdlist:
                 log.warning("eventloop: connection is gone, stopping")
                 self.shutdowncode = 1
                 break
