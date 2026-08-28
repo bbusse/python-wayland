@@ -109,6 +109,7 @@ class Window:
         self.shm_data = None
         self.commits = 0
         self.frames = 0
+        self.frame_pending = False
         self.commit()
 
     def close(self):
@@ -186,18 +187,22 @@ class Window:
         try:
             callback = self.surface.frame()
             callback.dispatcher['done'] = self._frame_done
+            self.frame_pending = True
         except Exception as e:
             log.debug("frame callback unavailable: %s", e)
 
         self.commits += 1
         self.surface.commit()
 
+    # wl_callback has no destroy request, so the proxy outlives the frame and
+    # can deliver done more than once. The flag counts one frame per commit,
+    # without relying on which proxy object the event arrives on
     def _frame_done(self, callback, time_ms):
+        if not self.frame_pending:
+            return
+
+        self.frame_pending = False
         self.frames += 1
-        try:
-            callback.destroy()
-        except Exception:
-            pass
 
     def redraw(self):
         """Copy the whole window surface to the display"""
