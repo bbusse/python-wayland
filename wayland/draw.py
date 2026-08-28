@@ -607,19 +607,15 @@ def img_scale_down(img, canvas_x, canvas_y):
 
 
 def img_scale_up(img, canvas_x, canvas_y, width, height):
-    dwidth = canvas_x - width
-    dheight = canvas_y - height
+    if not width or not height:
+        return img
 
-    if dheight > dwidth:
-        new_height = canvas_y
-        new_width = round(width * new_height / height)
-        img = img.resize((new_width, new_height))
-    else:
-        new_width = canvas_x
-        new_height = round(height * new_width / width)
-        img = img.resize((new_width, new_height))
+    scale = min(canvas_x / width, canvas_y / height)
+    if scale <= 1:
+        return img
 
-    return img
+    return img.resize((max(1, round(width * scale)),
+                       max(1, round(height * scale))), Image.LANCZOS)
 
 
 def draw_images_with_text(w, ctx=None):
@@ -782,7 +778,33 @@ def draw_text(w, ctx=None):
 
     pangocairocffi.show_layout(ctx, layout)
 
+    ctx.identity_matrix()
+    draw_overlays(w, ctx)
+
     del ctx
 
     w.s.flush()
     w.redraw()
+
+
+def draw_overlays(w, ctx, margin=40):
+    x = w.orig_width - margin
+    y = w.orig_height - margin
+    for obj in w.s_objects[1:]:
+        path = obj.get("file")
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            img = Image.open(path)
+            buffer = BytesIO()
+            img.save(buffer, format="PNG")
+            buffer.seek(0)
+            png = cairo.ImageSurface.create_from_png(buffer)
+        except Exception as e:
+            logging.error("draw-text: overlay {}: {}".format(path, e))
+            continue
+
+        x -= png.get_width()
+        ctx.set_source_surface(png, x, y - png.get_height())
+        ctx.paint()
+        x -= margin
