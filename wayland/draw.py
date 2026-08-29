@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import fcntl
 import logging
+import math
 from PIL import Image
 import sys
 import os
@@ -80,6 +81,8 @@ class Window:
         self.title = window["title"]
         self.orig_width = window["res_x"]
         self.orig_height = window["res_y"]
+        self.view_num = window.get("view_num")
+        self.view_count = window.get("view_count", 0)
         self._w = connection
         if not self._w.shm_formats:
             raise RuntimeError("No suitable Shm formats available")
@@ -664,6 +667,7 @@ def draw_images_with_text(w, ctx=None):
             pangocairocffi.show_layout(ctx, layout)
             ctx.restore()
             y += 40
+    draw_progress(w, ctx)
     del ctx
     w.s.flush()
     w.redraw()
@@ -671,6 +675,14 @@ def draw_images_with_text(w, ctx=None):
 def draw_image(w, ctx=False, text=False):
     if not ctx:
         ctx = cairo.Context(w.s)
+
+        ctx.set_source_rgba(float(w.s_objects[0]["bg_colour_r"]/255),
+                            float(w.s_objects[0]["bg_colour_g"]/255),
+                            float(w.s_objects[0]["bg_colour_b"]/255),
+                            w.s_objects[0]["bg_alpha"])
+        ctx.set_operator(cairo.OPERATOR_SOURCE)
+        ctx.paint()
+        ctx.set_operator(cairo.OPERATOR_OVER)
 
     # SVG
     if w.s_objects[0]["file"].endswith(".svg") or \
@@ -714,6 +726,7 @@ def draw_image(w, ctx=False, text=False):
         return ctx
 
     draw_caption(w, ctx)
+    draw_progress(w, ctx)
 
     w.s.flush()
     w.redraw()
@@ -778,10 +791,11 @@ def draw_text(w, ctx=None):
     ctx.set_operator(cairo.OPERATOR_OVER)
 
     # Position text
-    ctx.translate((w.orig_width / 2) - 550, w.orig_height / 2 - 300)
+    margin = 40
+    ctx.translate(margin, w.orig_height / 2 - 300)
 
     layout = pangocairocffi.create_layout(ctx)
-    layout._set_width(pangocffi.units_from_double(1100))
+    layout._set_width(pangocffi.units_from_double(w.orig_width - 2 * margin))
 
     if w.s_objects[0]["alignment"] == "left":
         layout._set_alignment(pangocffi.Alignment.LEFT)
@@ -813,11 +827,32 @@ def draw_text(w, ctx=None):
 
     ctx.identity_matrix()
     draw_overlays(w, ctx)
+    draw_progress(w, ctx)
 
     del ctx
 
     w.s.flush()
     w.redraw()
+
+
+def draw_progress(w, ctx, radius=7, spacing=28, margin=24):
+    count = getattr(w, "view_count", 0)
+    num = getattr(w, "view_num", None)
+    if not count or num is None:
+        return
+
+    ctx.identity_matrix()
+    ctx.set_line_width(2)
+    ctx.set_source_rgba(1, 1, 1, 0.8)
+    x = (w.orig_width - (count - 1) * spacing) / 2
+    y = w.orig_height - margin
+    for n in range(count):
+        ctx.new_path()
+        ctx.arc(x + n * spacing, y, radius, 0, 2 * math.pi)
+        if n == num:
+            ctx.fill()
+        else:
+            ctx.stroke()
 
 
 def draw_overlays(w, ctx, margin=40):
