@@ -790,10 +790,7 @@ def draw_text(w, ctx=None):
     ctx.paint()
     ctx.set_operator(cairo.OPERATOR_OVER)
 
-    # Position text
     margin = 40
-    ctx.translate(margin, w.orig_height / 2 - 300)
-
     layout = pangocairocffi.create_layout(ctx)
     layout._set_width(pangocffi.units_from_double(w.orig_width - 2 * margin))
 
@@ -823,6 +820,16 @@ def draw_text(w, ctx=None):
     logging.debug("draw-text: {}".format(markup))
     layout.apply_markup(markup)
 
+    # A left-aligned block keeps its lines flush so a table's columns stay
+    # aligned, but the block as a whole sits centered on the output. Centered
+    # text already places its lines within the full layout width
+    x = margin
+    if w.s_objects[0]["alignment"] == "left":
+        _, extents = layout.get_extents()
+        text_width = pangocffi.units_to_double(extents.width)
+        x = max(margin, (w.orig_width - text_width) / 2)
+
+    ctx.translate(x, w.orig_height / 2 - 300)
     pangocairocffi.show_layout(ctx, layout)
 
     ctx.identity_matrix()
