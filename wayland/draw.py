@@ -713,8 +713,41 @@ def draw_image(w, ctx=False, text=False):
     if text:
         return ctx
 
+    draw_caption(w, ctx)
+
     w.s.flush()
     w.redraw()
+
+
+def draw_caption(w, ctx, margin=40, pad=16):
+    caption = ""
+    for obj in w.s_objects[1:]:
+        if obj.get("text"):
+            caption = obj["text"]
+            break
+
+    if not caption:
+        return
+
+    obj = w.s_objects[1]
+    ctx.identity_matrix()
+    layout = pangocairocffi.create_layout(ctx)
+    layout._set_width(pangocffi.units_from_double(w.orig_width - 2 * margin))
+    layout._set_alignment(pangocffi.Alignment.CENTER)
+    font = obj.get("font") or obj.get("font_face") or "sans"
+    layout.apply_markup('<span foreground="white" font="{} {}">{}</span>'
+                        .format(font, obj.get("font_size") or 20, caption))
+
+    _, extents = layout.get_extents()
+    height = pangocffi.units_to_double(extents.height)
+    top = w.orig_height - margin - height - pad
+
+    ctx.set_source_rgba(0, 0, 0, 0.55)
+    ctx.rectangle(0, top - pad, w.orig_width, w.orig_height - top + pad)
+    ctx.fill()
+
+    ctx.move_to(margin, top)
+    pangocairocffi.show_layout(ctx, layout)
 
 
 def draw_image_with_context(w, ctx):
