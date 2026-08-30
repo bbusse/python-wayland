@@ -57,7 +57,7 @@ class _Display:
                                        self._default_queue, 1)
         if hasattr(name_or_fd, 'fileno'):
             self._f = name_or_fd
-            self.log.info("connected to existing fd %d", self._f)
+            self.log.debug("connected to existing fd %d", self._f)
         else:
             xdg_runtime_dir = os.getenv('XDG_RUNTIME_DIR')
             if not xdg_runtime_dir:
@@ -69,7 +69,7 @@ class _Display:
             path = os.path.join(xdg_runtime_dir, display)
             self._f = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, 0)
             self._f.connect(path)
-            self.log.info("connected to %s", path)
+            self.log.debug("connected to %s", path)
 
         self._f.setblocking(0)
 
@@ -112,7 +112,7 @@ class _Display:
         return next(self._oids)
 
     def _delete_id(self, display, id_):
-        self.log.info("server deleted %s", self.objects[id_])
+        self.log.debug("server deleted %s", self.objects[id_])
         self.objects[id_].oid = None
         del self.objects[id_]
         if id_ < 0xff000000:

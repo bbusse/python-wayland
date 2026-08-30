@@ -257,11 +257,11 @@ class Seat:
         # around.
 
     def _name(self, seat, name):
-        log.info("Seat got name: %s", name)
+        log.debug("Seat got name: %s", name)
         self.name = name
 
     def _capabilities(self, seat, c):
-        log.info("Seat %s got capabilities: %s", self.name, c)
+        log.debug("Seat %s got capabilities: %s", self.name, c)
         self.capabilities = c
         pointer_available = c & self.c_enum['pointer']
         if pointer_available and not self.pointer:
@@ -381,16 +381,16 @@ class Output:
 
     def _geometry(self, output, x, y, phy_width, phy_height, subpixel,
                   make, model, transform):
-        log.info("Output: got geometry: x=%s, y=%s, phy_width=%s, "
+        log.debug("Output: got geometry: x=%s, y=%s, phy_width=%s, "
                  "phy_height=%s, make=%s, model=%s",
                  x, y, phy_width, phy_height, make, model)
 
     def _mode(self, output, flags, width, height, refresh):
-        log.info("Output: got mode: flags=%s, width=%s, height=%s, "
+        log.debug("Output: got mode: flags=%s, width=%s, height=%s, "
                  "refresh=%s", flags, width, height, refresh)
 
     def _done(self, output):
-        log.info("Output: done for now")
+        log.debug("Output: done for now")
 
 class Waker:
     """A pipe in rdlist, so stop() can interrupt a blocking select."""
@@ -561,7 +561,7 @@ class WaylandConnection:
         self.display.flush()
 
     def registry_global_handler(self, registry, name, interface, version):
-        log.info("registry_global_handler: %s is %s v%s",
+        log.debug("registry_global_handler: %s is %s v%s",
                  name, interface, version)
         if interface == "wl_compositor":
             # We know up to and require version 3
@@ -588,10 +588,10 @@ class WaylandConnection:
 
     def registry_global_remove_handler(self, registry, name):
         # Haven't been able to get weston to send this event!
-        log.info("registry_global_remove_handler: %s gone", name)
+        log.debug("registry_global_remove_handler: %s gone", name)
         for s in self.seats:
             if s.global_name == name:
-                log.info("...it was a seat!  Releasing seat resources.")
+                log.debug("...it was a seat!  Releasing seat resources.")
                 s.removed()
 
     def shm_format_handler(self, shm, format_):

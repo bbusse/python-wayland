@@ -91,20 +91,20 @@ class ClientProxy:
 
     def dispatch_event(self, event, args):
         if self.destroyed:
-            self.log.info("ignore   event %s(%d).%s%s on destroyed proxy",
+            self.log.debug("ignore   event %s(%d).%s%s on destroyed proxy",
                           self.interface.name,
                           self.oid, event.name, args)
             return
         f = self.dispatcher.get(event.name, None)
         if f:
             if event.name not in self.silence:
-                self.log.info("dispatch event %s(%d).%s%s",
+                self.log.debug("dispatch event %s(%d).%s%s",
                               self.interface.name,
                               self.oid, event.name, args)
             f(self, *args)
         else:
             if event.name not in self.silence:
-                self.log.info("ignore   event %s(%d).%s%s",
+                self.log.debug("ignore   event %s(%d).%s%s",
                               self.interface.name,
                               self.oid, event.name, args)
 
@@ -418,7 +418,7 @@ class Request:
                               self.name, proxy.interface.name)
             raise DeletedProxyException
         if proxy.destroyed:
-            proxy.log.info("request %s.%s%s on destroyed object; ignoring",
+            proxy.log.debug("request %s.%s%s on destroyed object; ignoring",
                            proxy, self.name, args)
             return
         if proxy.version < self.since:
@@ -429,13 +429,13 @@ class Request:
             return
         r = proxy._marshal_request(self, *args)
         if r:
-            proxy.log.info(
+            proxy.log.debug(
                 "request %s.%s%s -> %s", proxy, self.name, args, r)
         else:
-            proxy.log.info("request %s.%s%s", proxy, self.name, args)
+            proxy.log.debug("request %s.%s%s", proxy, self.name, args)
         if self.is_destructor:
             proxy.destroyed = True
-            proxy.log.info(
+            proxy.log.debug(
                 "%s proxy destroyed by destructor request %s%s",
                 proxy, self.name, args)
         return r
