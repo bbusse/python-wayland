@@ -23,6 +23,14 @@ from xkbcommon import xkb
 
 log = logging.getLogger(__name__)
 
+
+# The pango foreground for a slot object; the caller sets font_colour_[rgb],
+# and white is the fallback for a slot built without them
+def font_colour(obj):
+    return "#%02x%02x%02x" % (obj.get("font_colour_r", 255),
+                              obj.get("font_colour_g", 255),
+                              obj.get("font_colour_b", 255))
+
 # The lists below live on the connection rather than at module level, so a
 # process running one view per thread keeps them apart. Shared, one view's
 # dead socket unregistered another's, one view's timer was alarmed by every
@@ -662,7 +670,7 @@ def draw_images_with_text(w, ctx=None):
             layout = pangocairocffi.create_layout(ctx)
             font = obj.get("font") or obj.get("font_face") or "sans"
             font_size = obj.get("font_size") or 20
-            markup = f'<span foreground="white" font="{font} {font_size}">{obj["text"]}</span>'
+            markup = f'<span foreground="{font_colour(obj)}" font="{font} {font_size}">{obj["text"]}</span>'
             layout.apply_markup(markup)
             pangocairocffi.show_layout(ctx, layout)
             ctx.restore()
@@ -804,16 +812,19 @@ def draw_text(w, ctx=None):
     for obj in w.s_objects:
         logging.debug("draw-text: Adding pango markup block")
 
+        fg = font_colour(obj)
         if not obj["font"]:
             # Use font-face
-            markup += '<span foreground="white" font="{} {}">{}\n</span>'\
-                      .format(obj["font_face"],
+            markup += '<span foreground="{}" font="{} {}">{}\n</span>'\
+                      .format(fg,
+                      obj["font_face"],
                       obj["font_size"],
                       obj["text"])
         else:
             # Use font
-            markup += '<span foreground="white" font="{} {}">{}\n</span>'\
-                      .format(obj["font"],
+            markup += '<span foreground="{}" font="{} {}">{}\n</span>'\
+                      .format(fg,
+                      obj["font"],
                       obj["font_size"],
                       obj["text"])
 
