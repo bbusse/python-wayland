@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import fcntl
 import logging
-import math
 from PIL import Image
 import sys
 import os
@@ -15,7 +14,6 @@ import time
 import wayland.protocol
 from wayland.client import MakeDisplay, DisplayError, ServerDisconnected
 from wayland.utils import AnonymousFile
-import math
 
 
 # See https://github.com/sde1000/python-xkbcommon for the following:
@@ -24,12 +22,23 @@ from xkbcommon import xkb
 log = logging.getLogger(__name__)
 
 
-# The pango foreground for a slot object; the caller sets font_colour_[rgb],
-# and white is the fallback for a slot built without them
+# The pango foreground for a slot object; the caller sets font_colour_[rgb].
+# The fallback for a slot built without them is a near-white, not pure white:
+# full brightness on a dark view haloes on a panel and rings under stream
+# re-encode
+FONT_COLOUR_FALLBACK = 0xed
+
+
 def font_colour(obj):
-    return "#%02x%02x%02x" % (obj.get("font_colour_r", 255),
-                              obj.get("font_colour_g", 255),
-                              obj.get("font_colour_b", 255))
+    return "#%02x%02x%02x" % (obj.get("font_colour_r", FONT_COLOUR_FALLBACK),
+                              obj.get("font_colour_g", FONT_COLOUR_FALLBACK),
+                              obj.get("font_colour_b", FONT_COLOUR_FALLBACK))
+
+
+# The same colour as an (r, g, b) tuple of 0..1 floats, for cairo sources
+def font_rgb(obj):
+    return tuple(obj.get(k, FONT_COLOUR_FALLBACK) / 255
+                 for k in ("font_colour_r", "font_colour_g", "font_colour_b"))
 
 # The lists below live on the connection rather than at module level, so a
 # process running one view per thread keeps them apart. Shared, one view's
@@ -89,8 +98,10 @@ class Window:
         self.title = window["title"]
         self.orig_width = window["res_x"]
         self.orig_height = window["res_y"]
-        self.view_num = window.get("view_num")
-        self.view_count = window.get("view_count", 0)
+        # Called as after_draw(w, ctx) once a draw_* function has painted its
+        # own content, the cairo context still live so the caller can add
+        # more to the same surface. The library has no opinion on what it draws
+        self.after_draw = window.get("after_draw")
         self._w = connection
         if not self._w.shm_formats:
             raise RuntimeError("No suitable Shm formats available")
@@ -675,7 +686,8 @@ def draw_images_with_text(w, ctx=None):
             pangocairocffi.show_layout(ctx, layout)
             ctx.restore()
             y += 40
-    draw_progress(w, ctx)
+    if w.after_draw:
+        w.after_draw(w, ctx)
     del ctx
     w.s.flush()
     w.redraw()
@@ -734,7 +746,8 @@ def draw_image(w, ctx=False, text=False):
         return ctx
 
     draw_caption(w, ctx)
-    draw_progress(w, ctx)
+    if w.after_draw:
+        w.after_draw(w, ctx)
 
     w.s.flush()
     w.redraw()
@@ -756,8 +769,9 @@ def draw_caption(w, ctx, margin=40, pad=16):
     layout._set_width(pangocffi.units_from_double(w.orig_width - 2 * margin))
     layout._set_alignment(pangocffi.Alignment.CENTER)
     font = obj.get("font") or obj.get("font_face") or "sans"
-    layout.apply_markup('<span foreground="white" font="{} {}">{}</span>'
-                        .format(font, obj.get("font_size") or 20, caption))
+    layout.apply_markup('<span foreground="{}" font="{} {}">{}</span>'
+                        .format(font_colour(obj), font,
+                                obj.get("font_size") or 20, caption))
 
     _, extents = layout.get_extents()
     height = pangocffi.units_to_double(extents.height)
@@ -799,6 +813,10 @@ def draw_text(w, ctx=None):
     ctx.set_operator(cairo.OPERATOR_OVER)
 
     margin = 40
+    overlays = load_overlays(w, overlay_max_side(w))
+    overlay_h = max((s.get_height() for s in overlays), default=0)
+    reserved = margin + overlay_h if overlays else 0
+
     layout = pangocairocffi.create_layout(ctx)
     layout._set_width(pangocffi.units_from_double(w.orig_width - 2 * margin))
 
@@ -834,18 +852,30 @@ def draw_text(w, ctx=None):
     # A left-aligned block keeps its lines flush so a table's columns stay
     # aligned, but the block as a whole sits centered on the output. Centered
     # text already places its lines within the full layout width
+    _, extents = layout.get_extents()
+    text_width = pangocffi.units_to_double(extents.width)
+    text_height = pangocffi.units_to_double(extents.height)
+
     x = margin
     if w.s_objects[0]["alignment"] == "left":
-        _, extents = layout.get_extents()
-        text_width = pangocffi.units_to_double(extents.width)
         x = max(margin, (w.orig_width - text_width) / 2)
 
-    ctx.translate(x, w.orig_height / 2 - 300)
+    # A view with an overlay row centers its text in the band above it
+    # instead of the fixed offset, so a long post's text does not run down
+    # into the picture
+    if reserved:
+        available = w.orig_height - 2 * margin - reserved
+        y = margin + max(0, (available - text_height) / 2)
+    else:
+        y = w.orig_height / 2 - 300
+
+    ctx.translate(x, y)
     pangocairocffi.show_layout(ctx, layout)
 
     ctx.identity_matrix()
-    draw_overlays(w, ctx)
-    draw_progress(w, ctx)
+    draw_overlays(w, ctx, surfaces=overlays)
+    if w.after_draw:
+        w.after_draw(w, ctx)
 
     del ctx
 
@@ -853,44 +883,127 @@ def draw_text(w, ctx=None):
     w.redraw()
 
 
-def draw_progress(w, ctx, radius=7, spacing=28, margin=24):
-    count = getattr(w, "view_count", 0)
-    num = getattr(w, "view_num", None)
-    if not count or num is None:
-        return
+# Object 0 beside object 1, object 1 auto-scaled so its rendered height
+# matches object 0's -- a caller-supplied font_size on it is only a probe for
+# that scaling, not what actually renders. Object 2, if given and non-empty,
+# sits below object 0. What the three objects mean is up to the caller
+def draw_scaled_pair(w, ctx=None):
+    if not ctx:
+        ctx = cairo.Context(w.s)
+        ctx.set_source_rgba(float(w.s_objects[0]["bg_colour_r"]/255),
+                            float(w.s_objects[0]["bg_colour_g"]/255),
+                            float(w.s_objects[0]["bg_colour_b"]/255),
+                            w.s_objects[0]["bg_alpha"])
 
-    ctx.identity_matrix()
-    ctx.set_line_width(2)
-    ctx.set_source_rgba(1, 1, 1, 0.8)
-    x = (w.orig_width - (count - 1) * spacing) / 2
-    y = w.orig_height - margin
-    for n in range(count):
-        ctx.new_path()
-        ctx.arc(x + n * spacing, y, radius, 0, 2 * math.pi)
-        if n == num:
-            ctx.fill()
-        else:
-            ctx.stroke()
+    ctx.set_operator(cairo.OPERATOR_SOURCE)
+    ctx.paint()
+    ctx.set_operator(cairo.OPERATOR_OVER)
+
+    margin = 40
+    primary = w.s_objects[0]
+    companion = w.s_objects[1]
+    footer = w.s_objects[2] if len(w.s_objects) > 2 else None
+
+    def span(obj, text, font_size=None):
+        font = obj.get("font") or obj.get("font_face") or "sans"
+        size = font_size if font_size is not None else obj["font_size"]
+
+        return f'<span foreground="{font_colour(obj)}" font="{font} {size}">{text}</span>'
+
+    primary_layout = pangocairocffi.create_layout(ctx)
+    primary_layout.apply_markup(span(primary, primary["text"]))
+    _, primary_extents = primary_layout.get_extents()
+    primary_width = pangocffi.units_to_double(primary_extents.width)
+    primary_height = pangocffi.units_to_double(primary_extents.height)
+
+    primary_x = margin
+    primary_y = w.orig_height / 2 - primary_height / 2
+    ctx.save()
+    ctx.translate(primary_x, primary_y)
+    pangocairocffi.show_layout(ctx, primary_layout)
+    ctx.restore()
+
+    # A single-line pango layout's height scales ~linearly with font size, so
+    # a probe render gives us the size that matches the primary block's
+    # height without a search
+    probe_size = 100
+    probe_layout = pangocairocffi.create_layout(ctx)
+    probe_layout.apply_markup(span(companion, companion["text"], probe_size))
+    _, probe_extents = probe_layout.get_extents()
+    probe_height = pangocffi.units_to_double(probe_extents.height)
+    companion_font_size = round(probe_size * (primary_height / probe_height)) \
+        if probe_height else probe_size
+
+    companion_layout = pangocairocffi.create_layout(ctx)
+    companion_layout.apply_markup(span(companion, companion["text"],
+                                       companion_font_size))
+    _, companion_extents = companion_layout.get_extents()
+    companion_height = pangocffi.units_to_double(companion_extents.height)
+
+    companion_x = primary_x + primary_width + margin
+    companion_y = primary_y + primary_height / 2 - companion_height / 2
+    ctx.save()
+    ctx.translate(companion_x, companion_y)
+    pangocairocffi.show_layout(ctx, companion_layout)
+    ctx.restore()
+
+    if footer and footer.get("text"):
+        footer_layout = pangocairocffi.create_layout(ctx)
+        footer_layout.apply_markup(span(footer, footer["text"]))
+        ctx.save()
+        ctx.translate(primary_x, primary_y + primary_height + margin)
+        pangocairocffi.show_layout(ctx, footer_layout)
+        ctx.restore()
+
+    if w.after_draw:
+        w.after_draw(w, ctx)
+
+    del ctx
+
+    w.s.flush()
+    w.redraw()
 
 
-def draw_overlays(w, ctx, margin=40):
-    x = w.orig_width - margin
-    y = w.orig_height - margin
+# Every overlay image (a small icon or a full photo, the caller's choice)
+# thumbnailed to at most max_side on its long side. Loaded once so
+# draw_text and draw_overlays agree on how much room the row takes
+def load_overlays(w, max_side):
+    surfaces = []
     for obj in w.s_objects[1:]:
         path = obj.get("file")
         if not path or not os.path.isfile(path):
             continue
         try:
             img = Image.open(path)
+            if max(img.size) > max_side:
+                img.thumbnail((max_side, max_side))
             buffer = BytesIO()
             img.save(buffer, format="PNG")
             buffer.seek(0)
-            png = cairo.ImageSurface.create_from_png(buffer)
+            surfaces.append(cairo.ImageSurface.create_from_png(buffer))
         except Exception as e:
             logging.error("draw-text: overlay {}: {}".format(path, e))
-            continue
 
-        x -= png.get_width()
+    return surfaces
+
+
+def overlay_max_side(w):
+    return round(min(w.orig_width, w.orig_height) * 0.45)
+
+
+# The overlay row centered along the bottom edge, each image bottom-aligned
+# to the same baseline
+def draw_overlays(w, ctx, margin=40, surfaces=None):
+    if surfaces is None:
+        surfaces = load_overlays(w, overlay_max_side(w))
+    if not surfaces:
+        return
+
+    total_width = (sum(s.get_width() for s in surfaces)
+                   + margin * (len(surfaces) - 1))
+    x = max(margin, (w.orig_width - total_width) / 2)
+    y = w.orig_height - margin
+    for png in surfaces:
         ctx.set_source_surface(png, x, y - png.get_height())
         ctx.paint()
-        x -= margin
+        x += png.get_width() + margin
