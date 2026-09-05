@@ -808,6 +808,16 @@ def draw_image_with_context(w, ctx):
     w.redraw()
 
 
+# "justify" is left alignment with the full lines stretched to the layout width
+def set_alignment(layout, alignment):
+    if alignment == "center":
+        layout._set_alignment(pangocffi.Alignment.CENTER)
+    else:
+        layout._set_alignment(pangocffi.Alignment.LEFT)
+    pangocffi.pango.pango_layout_set_justify(layout.pointer,
+                                             alignment == "justify")
+
+
 def draw_text(w, ctx=None):
     if not ctx:
         logging.debug("draw-text: Creating canvas context for {} objects"\
@@ -831,10 +841,7 @@ def draw_text(w, ctx=None):
     layout = pangocairocffi.create_layout(ctx)
     layout._set_width(pangocffi.units_from_double(w.orig_width - 2 * margin))
 
-    if w.s_objects[0]["alignment"] == "left":
-        layout._set_alignment(pangocffi.Alignment.LEFT)
-    elif w.s_objects[0]["alignment"] == "center":
-        layout._set_alignment(pangocffi.Alignment.CENTER)
+    set_alignment(layout, w.s_objects[0]["alignment"])
 
     markup = ""
 
@@ -979,8 +986,9 @@ def draw_scaled_pair(w, ctx=None):
     w.redraw()
 
 
-# Text wrapped to the left, one image at the full available height on the
-# right -- the last file-bearing object among s_objects[1:]. Any earlier
+# Text wrapped to the left, each object aligned its own way, one image on the
+# right at the full available height and at most 40% of the available width
+# -- the last file-bearing object among s_objects[1:]. Any earlier
 # file-bearing object is a small overlay, drawn the way draw_overlays does
 # it. after_draw fires at the end, same as every other draw_* function
 def draw_text_and_image(w, ctx=None):
@@ -1008,7 +1016,7 @@ def draw_text_and_image(w, ctx=None):
     png = None
     if image_obj:
         try:
-            max_width = round(w.orig_width * 0.5)
+            max_width = round((w.orig_width - 2 * margin) * 0.4)
             img = img_scale_to_fit(Image.open(image_obj["file"]),
                                    max_width, body_height)
             buffer = BytesIO()
@@ -1022,29 +1030,28 @@ def draw_text_and_image(w, ctx=None):
     image_column = png.get_width() + margin if png else 0
     text_width = max(1, w.orig_width - 2 * margin - image_column)
 
-    layout = pangocairocffi.create_layout(ctx)
-    layout._set_width(pangocffi.units_from_double(text_width))
-    if w.s_objects[0]["alignment"] == "left":
-        layout._set_alignment(pangocffi.Alignment.LEFT)
-    elif w.s_objects[0]["alignment"] == "center":
-        layout._set_alignment(pangocffi.Alignment.CENTER)
-
-    markup = ""
+    layouts = []
     for obj in w.s_objects:
         if id(obj) in file_obj_ids:
             continue
+        layout = pangocairocffi.create_layout(ctx)
+        layout._set_width(pangocffi.units_from_double(text_width))
+        set_alignment(layout, obj["alignment"])
         font = obj.get("font") or obj.get("font_face") or "sans"
-        markup += ('<span foreground="{}" font="{} {}">{}\n</span>'
-                  .format(font_colour(obj), font,
-                          obj["font_size"], obj["text"]))
-    layout.apply_markup(markup)
+        layout.apply_markup('<span foreground="{}" font="{} {}">{}</span>'
+                            .format(font_colour(obj), font, obj["font_size"],
+                                    obj["text"] or " "))
+        _, extents = layout.get_extents()
+        layouts.append((layout, pangocffi.units_to_double(extents.height)))
 
-    _, extents = layout.get_extents()
-    text_height = pangocffi.units_to_double(extents.height)
-    ctx.save()
-    ctx.translate(margin, body_top + max(0, (body_height - text_height) / 2))
-    pangocairocffi.show_layout(ctx, layout)
-    ctx.restore()
+    text_height = sum(height for _, height in layouts)
+    y = body_top + max(0, (body_height - text_height) / 2)
+    for layout, height in layouts:
+        ctx.save()
+        ctx.translate(margin, y)
+        pangocairocffi.show_layout(ctx, layout)
+        ctx.restore()
+        y += height
 
     if png:
         image_y = body_top + max(0, (body_height - png.get_height()) / 2)
