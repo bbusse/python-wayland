@@ -925,13 +925,16 @@ def draw_scaled_pair(w, ctx=None):
 
     # A single-line pango layout's height scales ~linearly with font size, so
     # a probe render gives us the size that matches the primary block's
-    # height without a search
+    # height without a search. "scale" and "gap" on the companion object let
+    # the caller size it past a plain match and space it apart from primary
     probe_size = 100
     probe_layout = pangocairocffi.create_layout(ctx)
     probe_layout.apply_markup(span(companion, companion["text"], probe_size))
     _, probe_extents = probe_layout.get_extents()
     probe_height = pangocffi.units_to_double(probe_extents.height)
-    companion_font_size = round(probe_size * (primary_height / probe_height)) \
+    companion_scale = companion.get("scale") or 1.0
+    companion_font_size = round(probe_size * (primary_height / probe_height)
+                                * companion_scale) \
         if probe_height else probe_size
 
     companion_layout = pangocairocffi.create_layout(ctx)
@@ -940,7 +943,8 @@ def draw_scaled_pair(w, ctx=None):
     _, companion_extents = companion_layout.get_extents()
     companion_height = pangocffi.units_to_double(companion_extents.height)
 
-    companion_x = primary_x + primary_width + margin
+    companion_gap = companion.get("gap", margin)
+    companion_x = primary_x + primary_width + companion_gap
     companion_y = primary_y + primary_height / 2 - companion_height / 2
     ctx.save()
     ctx.translate(companion_x, companion_y)
