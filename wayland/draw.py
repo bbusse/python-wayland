@@ -13,6 +13,7 @@ from io import BytesIO
 import time
 import wayland.protocol
 from wayland.client import MakeDisplay, DisplayError, ServerDisconnected
+from wayland.grid import align_offset, cell_rect, parse_track, size_tracks
 from wayland.utils import AnonymousFile
 
 
@@ -102,6 +103,9 @@ class Window:
         # own content, the cairo context still live so the caller can add
         # more to the same surface. The library has no opinion on what it draws
         self.after_draw = window.get("after_draw")
+        # {cols, rows, cells, ...} for draw_grid, see grid.py. What each cell
+        # (a slot index) means is entirely the caller's
+        self.grid = window.get("grid")
         self._w = connection
         if not self._w.shm_formats:
             raise RuntimeError("No suitable Shm formats available")
@@ -651,57 +655,36 @@ def img_scale_to_fit(img, max_width, max_height):
     return img.resize(size, Image.LANCZOS)
 
 
-def draw_images_with_text(w, ctx=None):
-    import os
-    if not ctx:
-        ctx = cairo.Context(w.s)
-    ctx.set_operator(cairo.OPERATOR_SOURCE)
-    ctx.paint()
-    ctx.set_operator(cairo.OPERATOR_OVER)
-    y = 40
-    for idx, obj in enumerate(w.s_objects):
-        file_path = obj.get("file")
-        if file_path:
-            logging.debug(f"draw_images_with_text: s_object[{idx}]['file'] = {file_path}")
-            exists = os.path.isfile(file_path)
-            logging.debug(f"draw_images_with_text: file exists: {exists}")
-            if exists:
-                try:
-                    size = os.path.getsize(file_path)
-                    logging.debug(f"draw_images_with_text: file size: {size}")
-                    import imghdr
-                    imgtype = imghdr.what(file_path)
-                    logging.debug(f"draw_images_with_text: file type: {imgtype}")
-                except Exception as e:
-                    logging.error(f"draw_images_with_text: file stat/type error: {e}")
-        if file_path and os.path.isfile(file_path):
-            try:
-                img = Image.open(file_path)
-                buffer = BytesIO()
-                img.save(buffer, format="PNG")
-                buffer.seek(0)
-                png = cairo.ImageSurface.create_from_png(buffer)
-                ctx.set_source_surface(png, 40, y)
-                ctx.paint()
-                y += png.get_height() + 10
-            except Exception as e:
-                logging.error(f"draw_images_with_text: {e}")
-        elif obj.get("text"):
-            ctx.save()
-            ctx.translate(40, y)
-            layout = pangocairocffi.create_layout(ctx)
-            font = obj.get("font") or obj.get("font_face") or "sans"
-            font_size = obj.get("font_size") or 20
-            markup = f'<span foreground="{font_colour(obj)}" font="{font} {font_size}">{obj["text"]}</span>'
-            layout.apply_markup(markup)
-            pangocairocffi.show_layout(ctx, layout)
-            ctx.restore()
-            y += 40
-    if w.after_draw:
-        w.after_draw(w, ctx)
-    del ctx
-    w.s.flush()
-    w.redraw()
+# Fill the box on both axes, cropping the overflow, for a full-bleed
+# background where letterbox bars would look wrong
+def img_scale_to_cover(img, width, height):
+    scale = max(width / img.width, height / img.height)
+    img = img.resize((max(1, round(img.width * scale)),
+                      max(1, round(img.height * scale))), Image.LANCZOS)
+    left = (img.width - width) // 2
+    top = (img.height - height) // 2
+    return img.crop((left, top, left + width, top + height))
+
+
+# The theme's background picture behind a text view: object 0's file, painted
+# cover-scaled over the background colour. draw_text then lays its text out
+# unchanged on top
+def paint_background_image(w, ctx):
+    path = w.s_objects[0].get("file")
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        img = img_scale_to_cover(Image.open(path).convert("RGB"),
+                                 w.orig_width, w.orig_height)
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+        png = cairo.ImageSurface.create_from_png(buffer)
+        ctx.set_source_surface(png, 0, 0)
+        ctx.paint()
+    except Exception as e:
+        logging.error("draw: background image {}: {}".format(path, e))
+
 
 def draw_image(w, ctx=False, text=False):
     if not ctx:
@@ -833,6 +816,8 @@ def draw_text(w, ctx=None):
     ctx.paint()
     ctx.set_operator(cairo.OPERATOR_OVER)
 
+    paint_background_image(w, ctx)
+
     margin = 40
     overlays = load_overlays(w.s_objects[1:], overlay_max_side(w))
     overlay_h = max((s.get_height() for s in overlays), default=0)
@@ -902,7 +887,7 @@ def draw_text(w, ctx=None):
 
 
 # Object 0 beside object 1, object 1 auto-scaled so its rendered height
-# matches object 0's -- a caller-supplied font_size on it is only a probe for
+# matches object 0's. A caller-supplied font_size on it is only a probe for
 # that scaling, not what actually renders. Object 2, if given and non-empty,
 # sits below object 0. What the three objects mean is up to the caller
 def draw_scaled_pair(w, ctx=None):
@@ -987,10 +972,10 @@ def draw_scaled_pair(w, ctx=None):
 
 
 # Text wrapped to the left, each object aligned its own way, one image on the
-# right at the full available height and at most 40% of the available width
-# -- the last file-bearing object among s_objects[1:]. Any earlier
+# right at the full available height and at most 40% of the available width,
+# taken from the last file-bearing object among s_objects[1:]. Any earlier
 # file-bearing object is a small overlay, drawn the way draw_overlays does
-# it. after_draw fires at the end, same as every other draw_* function
+# it. after_draw fires at the end, same as every other draw function
 def draw_text_and_image(w, ctx=None):
     if not ctx:
         ctx = cairo.Context(w.s)
@@ -1034,9 +1019,19 @@ def draw_text_and_image(w, ctx=None):
     for obj in w.s_objects:
         if id(obj) in file_obj_ids:
             continue
+        align = obj["alignment"]
+        # Full justification blows the gaps open once a line holds only a few
+        # words. Below roughly 40 characters of column (a proportional-font
+        # guess at the slot's size) fall back to left
+        if align == "justify" and text_width < obj["font_size"] * 20:
+            align = "left"
         layout = pangocairocffi.create_layout(ctx)
         layout._set_width(pangocffi.units_from_double(text_width))
-        set_alignment(layout, obj["alignment"])
+        # PANGO_WRAP_WORD_CHAR: break inside an over-long token (a url in a
+        # post) rather than end the line early and let justification blow
+        # the gap open
+        pangocffi.pango.pango_layout_set_wrap(layout.pointer, 2)
+        set_alignment(layout, align)
         font = obj.get("font") or obj.get("font_face") or "sans"
         layout.apply_markup('<span foreground="{}" font="{} {}">{}</span>'
                             .format(font_colour(obj), font, obj["font_size"],
@@ -1072,8 +1067,175 @@ def draw_text_and_image(w, ctx=None):
     w.redraw()
 
 
-# Every image among objs thumbnailed to at most max_side on its long side.
-# Loaded once so a caller can decide layout and reuse the same surfaces
+def _cell_span(obj):
+    font = obj.get("font") or obj.get("font_face") or "sans"
+
+    return '<span foreground="{}" font="{} {}">{}</span>'.format(
+        font_colour(obj), font, obj["font_size"], obj["text"] or " ")
+
+
+def _text_layout(ctx, obj, width):
+    layout = pangocairocffi.create_layout(ctx)
+    if width:
+        layout._set_width(pangocffi.units_from_double(max(1, width)))
+    # PANGO_WRAP_WORD_CHAR: an over-long token breaks rather than ending the
+    # line early
+    pangocffi.pango.pango_layout_set_wrap(layout.pointer, 2)
+    align = obj["alignment"]
+    if align == "justify" and width and width < obj["font_size"] * 20:
+        align = "left"
+    set_alignment(layout, align)
+    layout.apply_markup(_cell_span(obj))
+
+    return layout
+
+
+def _blit_text(ctx, obj, x, y, cw, ch, valign):
+    layout = _text_layout(ctx, obj, cw)
+    _, ext = layout.get_extents()
+    th = pangocffi.units_to_double(ext.height)
+    dy = align_offset(valign, th, ch)
+    ctx.save()
+    ctx.translate(x, y + dy)
+    pangocairocffi.show_layout(ctx, layout)
+    ctx.restore()
+
+
+def _blit_image(ctx, path, x, y, cw, ch, fit):
+    try:
+        img = Image.open(path)
+        if fit == "cover":
+            img = img_scale_to_cover(img.convert("RGB"),
+                                     max(1, round(cw)), max(1, round(ch)))
+        else:
+            img = img_scale_to_fit(img, max(1, round(cw)), max(1, round(ch)))
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        buffer.seek(0)
+        png = cairo.ImageSurface.create_from_png(buffer)
+    except Exception as e:
+        logging.error("draw-grid: image {}: {}".format(path, e))
+
+        return
+
+    ctx.set_source_surface(png, x + max(0, (cw - png.get_width()) / 2),
+                           y + max(0, (ch - png.get_height()) / 2))
+    ctx.paint()
+
+
+def _has_image(obj):
+    return bool(obj.get("file")) and os.path.isfile(obj["file"])
+
+
+# A grid body: w.grid is {cols, rows, cells, gap?, margin?, align?}. Each cell
+# is {slot, col, row, colspan?, rowspan?, fit?, valign?} placing one slot into
+# a track region. Columns are sized first (auto = the cell's natural width, an
+# image scaled to the body height), then rows (auto = content height at the
+# now-known width). A file slot that no cell places falls through to the
+# overlay row, so a stray qr still lands bottom-centre
+def draw_grid(w, ctx=None):
+    if not ctx:
+        ctx = cairo.Context(w.s)
+        ctx.set_source_rgba(float(w.s_objects[0]["bg_colour_r"]/255),
+                            float(w.s_objects[0]["bg_colour_g"]/255),
+                            float(w.s_objects[0]["bg_colour_b"]/255),
+                            w.s_objects[0]["bg_alpha"])
+
+    ctx.set_operator(cairo.OPERATOR_SOURCE)
+    ctx.paint()
+    ctx.set_operator(cairo.OPERATOR_OVER)
+    paint_background_image(w, ctx)
+
+    spec = w.grid or {}
+    margin = spec.get("margin", 40)
+    gap = spec.get("gap", margin)
+    cols_spec = spec.get("cols") or ["1fr"]
+    rows_spec = spec.get("rows") or ["auto"]
+    cells = [c for c in spec.get("cells", [])
+             if 0 <= c.get("slot", -1) < len(w.s_objects)]
+
+    inner_w = w.orig_width - 2 * margin
+    inner_h = w.orig_height - 2 * margin
+
+    def span_one(cell, axis):
+        return cell.get("colspan" if axis == "col" else "rowspan", 1) == 1
+
+    def col_auto(cx, i):
+        best = 0.0
+        for c in cells:
+            if c.get("col", 0) != i or not span_one(c, "col"):
+                continue
+            obj = w.s_objects[c["slot"]]
+            if _has_image(obj):
+                try:
+                    im = Image.open(obj["file"])
+                    scaled = im.width * (inner_h / im.height) if im.height else 0
+                    best = max(best, min(scaled, inner_w * 0.45))
+                except Exception:
+                    pass
+            elif obj["text"]:
+                _, ext = _text_layout(cx, obj, 0).get_extents()
+                best = max(best, pangocffi.units_to_double(ext.width))
+        return best
+
+    auto_cols = {i: col_auto(ctx, i) for i, s in enumerate(cols_spec)
+                 if parse_track(s)[0] == "auto"}
+    cols = size_tracks(cols_spec, inner_w, gap, auto_cols)
+
+    def row_auto(cx, i):
+        best = 0.0
+        for c in cells:
+            if c.get("row", 0) != i or not span_one(c, "row"):
+                continue
+            _, _, cw, _ = cell_rect(c, cols, [(0, 0)] * len(rows_spec), gap)
+            obj = w.s_objects[c["slot"]]
+            if _has_image(obj):
+                try:
+                    im = Image.open(obj["file"])
+                    best = max(best, im.height * (cw / im.width)
+                               if im.width else 0)
+                except Exception:
+                    pass
+            elif obj["text"]:
+                _, ext = _text_layout(cx, obj, cw).get_extents()
+                best = max(best, pangocffi.units_to_double(ext.height))
+        return best
+
+    auto_rows = {i: row_auto(ctx, i) for i, s in enumerate(rows_spec)
+                 if parse_track(s)[0] == "auto"}
+    rows = size_tracks(rows_spec, inner_h, gap, auto_rows)
+
+    total_h = rows[-1][0] + rows[-1][1] if rows else 0
+    ox = margin
+    oy = margin + align_offset(spec.get("align", "center"), total_h, inner_h)
+
+    for c in cells:
+        obj = w.s_objects[c["slot"]]
+        x, y, cw, ch = cell_rect(c, cols, rows, gap)
+        x += ox
+        y += oy
+        if _has_image(obj):
+            _blit_image(ctx, obj["file"], x, y, cw, ch, c.get("fit", "contain"))
+        elif obj["text"]:
+            _blit_text(ctx, obj, x, y, cw, ch, c.get("valign", "center"))
+
+    placed = {c["slot"] for c in cells}
+    extras = [w.s_objects[i] for i in range(1, len(w.s_objects))
+              if i not in placed and _has_image(w.s_objects[i])]
+    if extras:
+        draw_overlays(w, ctx, surfaces=load_overlays(extras, overlay_max_side(w)))
+
+    if w.after_draw:
+        w.after_draw(w, ctx)
+
+    del ctx
+
+    w.s.flush()
+    w.redraw()
+
+
+# Every image among objs thumbnailed to at most max_side on its long side,
+# loaded once so a caller can decide layout and reuse the same surfaces
 # rather than decoding twice
 def load_overlays(objs, max_side):
     surfaces = []
