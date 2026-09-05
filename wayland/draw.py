@@ -640,6 +640,17 @@ def img_scale_up(img, canvas_x, canvas_y, width, height):
                        max(1, round(height * scale))), Image.LANCZOS)
 
 
+# Fit within a box on whichever axis is more constraining, so a wide image
+# letterboxes (bars top and bottom) instead of pushing the box wider
+def img_scale_to_fit(img, max_width, max_height):
+    scale = min(max_width / img.width, max_height / img.height)
+    size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
+    if size == (img.width, img.height):
+        return img
+
+    return img.resize(size, Image.LANCZOS)
+
+
 def draw_images_with_text(w, ctx=None):
     import os
     if not ctx:
@@ -813,7 +824,7 @@ def draw_text(w, ctx=None):
     ctx.set_operator(cairo.OPERATOR_OVER)
 
     margin = 40
-    overlays = load_overlays(w, overlay_max_side(w))
+    overlays = load_overlays(w.s_objects[1:], overlay_max_side(w))
     overlay_h = max((s.get_height() for s in overlays), default=0)
     reserved = margin + overlay_h if overlays else 0
 
@@ -968,12 +979,98 @@ def draw_scaled_pair(w, ctx=None):
     w.redraw()
 
 
-# Every overlay image (a small icon or a full photo, the caller's choice)
-# thumbnailed to at most max_side on its long side. Loaded once so
-# draw_text and draw_overlays agree on how much room the row takes
-def load_overlays(w, max_side):
+# Text wrapped to the left, one image at the full available height on the
+# right -- the last file-bearing object among s_objects[1:]. Any earlier
+# file-bearing object is a small overlay, drawn the way draw_overlays does
+# it. after_draw fires at the end, same as every other draw_* function
+def draw_text_and_image(w, ctx=None):
+    if not ctx:
+        ctx = cairo.Context(w.s)
+        ctx.set_source_rgba(float(w.s_objects[0]["bg_colour_r"]/255),
+                            float(w.s_objects[0]["bg_colour_g"]/255),
+                            float(w.s_objects[0]["bg_colour_b"]/255),
+                            w.s_objects[0]["bg_alpha"])
+
+    ctx.set_operator(cairo.OPERATOR_SOURCE)
+    ctx.paint()
+    ctx.set_operator(cairo.OPERATOR_OVER)
+
+    margin = 40
+    body_top = margin
+    body_height = max(1, w.orig_height - 2 * margin)
+
+    file_objs = [obj for obj in w.s_objects[1:]
+                 if obj.get("file") and os.path.isfile(obj["file"])]
+    image_obj = file_objs[-1] if file_objs else None
+    small_objs = file_objs[:-1]
+    file_obj_ids = {id(obj) for obj in file_objs}
+
+    png = None
+    if image_obj:
+        try:
+            max_width = round(w.orig_width * 0.5)
+            img = img_scale_to_fit(Image.open(image_obj["file"]),
+                                   max_width, body_height)
+            buffer = BytesIO()
+            img.save(buffer, format="PNG")
+            buffer.seek(0)
+            png = cairo.ImageSurface.create_from_png(buffer)
+        except Exception as e:
+            logging.error("draw-text-and-image: {}: {}"
+                          .format(image_obj["file"], e))
+
+    image_column = png.get_width() + margin if png else 0
+    text_width = max(1, w.orig_width - 2 * margin - image_column)
+
+    layout = pangocairocffi.create_layout(ctx)
+    layout._set_width(pangocffi.units_from_double(text_width))
+    if w.s_objects[0]["alignment"] == "left":
+        layout._set_alignment(pangocffi.Alignment.LEFT)
+    elif w.s_objects[0]["alignment"] == "center":
+        layout._set_alignment(pangocffi.Alignment.CENTER)
+
+    markup = ""
+    for obj in w.s_objects:
+        if id(obj) in file_obj_ids:
+            continue
+        font = obj.get("font") or obj.get("font_face") or "sans"
+        markup += ('<span foreground="{}" font="{} {}">{}\n</span>'
+                  .format(font_colour(obj), font,
+                          obj["font_size"], obj["text"]))
+    layout.apply_markup(markup)
+
+    _, extents = layout.get_extents()
+    text_height = pangocffi.units_to_double(extents.height)
+    ctx.save()
+    ctx.translate(margin, body_top + max(0, (body_height - text_height) / 2))
+    pangocairocffi.show_layout(ctx, layout)
+    ctx.restore()
+
+    if png:
+        image_y = body_top + max(0, (body_height - png.get_height()) / 2)
+        ctx.set_source_surface(png, w.orig_width - margin - png.get_width(),
+                               image_y)
+        ctx.paint()
+
+    if small_objs:
+        small_surfaces = load_overlays(small_objs, overlay_max_side(w))
+        draw_overlays(w, ctx, surfaces=small_surfaces)
+
+    if w.after_draw:
+        w.after_draw(w, ctx)
+
+    del ctx
+
+    w.s.flush()
+    w.redraw()
+
+
+# Every image among objs thumbnailed to at most max_side on its long side.
+# Loaded once so a caller can decide layout and reuse the same surfaces
+# rather than decoding twice
+def load_overlays(objs, max_side):
     surfaces = []
-    for obj in w.s_objects[1:]:
+    for obj in objs:
         path = obj.get("file")
         if not path or not os.path.isfile(path):
             continue
@@ -999,7 +1096,7 @@ def overlay_max_side(w):
 # to the same baseline
 def draw_overlays(w, ctx, margin=40, surfaces=None):
     if surfaces is None:
-        surfaces = load_overlays(w, overlay_max_side(w))
+        surfaces = load_overlays(w.s_objects[1:], overlay_max_side(w))
     if not surfaces:
         return
 
