@@ -872,13 +872,13 @@ def draw_text(w, ctx=None):
         x = max(margin, (w.orig_width - text_width) / 2)
 
     # A view with an overlay row centers its text in the band above it
-    # instead of the fixed offset, so a long post's text does not run down
+    # instead of the object offset, so a long post's text does not run down
     # into the picture
     if reserved:
         available = w.orig_height - 2 * margin - reserved
         y = margin + max(0, (available - text_height) / 2)
     else:
-        y = w.orig_height / 2 - 300
+        y = w.s_objects[0]["offset_y"]
 
     ctx.translate(x, y)
     pangocairocffi.show_layout(ctx, layout)
